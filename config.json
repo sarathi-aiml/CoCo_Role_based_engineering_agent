@@ -1,0 +1,6 @@
+{
+  "personas": [
+    { "name": "alex", "title": "Data Engineer" },
+    { "name": "dave", "title": "Product Manager" }
+  ]
+}

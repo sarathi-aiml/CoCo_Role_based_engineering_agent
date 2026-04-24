@@ -1,0 +1,23 @@
+{
+  "name": "dual-cortex-wrapper",
+  "version": "1.0.0",
+  "description": "Two interactive AI personas (Alex and Dave) powered exclusively by the cortex-code CLI, communicating through a shared file-based message bus.",
+  "type": "module",
+  "bin": {
+    "cortex-persona": "./bin/start.js",
+    "alex": "./bin/alex.js",
+    "dave": "./bin/dave.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {},
+  "keywords": [
+    "cortex-code",
+    "cli",
+    "repl",
+    "ai",
+    "wrapper"
+  ],
+  "license": "MIT"
+}
