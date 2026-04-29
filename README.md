@@ -1,4 +1,4 @@
-# Dual Cortex Wrapper
+# Cortex Code Personas Agent
 
 Two AI personas running in separate terminals, having real back-and-forth conversations powered entirely by the `cortex-code` CLI. Names, roles, and titles are fully customizable via `config.json`.
 
