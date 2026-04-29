@@ -1,7 +1,7 @@
 import readline from "readline";
 import { loadRole }                       from "./roleLoader.js";
-import { askCortex }                      from "./cortex.js";
-import { initBus, sendMessage, watchBus } from "./bus.js";
+import { askCortex, cancelActiveCortex, isCortexCancelledError } from "./cortex.js";
+import { initBus, sendMessage, watchBus, broadcastCortexStop, watchCortexStop } from "./bus.js";
 import { detectIntent }                   from "./intentDetector.js";
 import { getConfig, getPersona, getOtherPersona } from "./config.js";
 
@@ -163,9 +163,9 @@ function printBanner(name, title, clr, otherName) {
   console.log(`\n${clr}╔${"═".repeat(w - 2)}╗${C.reset}`);
   console.log(`${clr}║${C.reset}${inner.padEnd(w - 2)}${clr}║${C.reset}`);
   console.log(`${clr}╚${"═".repeat(w - 2)}╝${C.reset}\n`);
-  console.log(`  ${C.dim}Type to chat  ·  /help  ·  /quit to exit${C.reset}`);
+  console.log(`  ${C.dim}Type to chat  ·  /help${C.reset}`);
   console.log(`  ${C.dim}Message ${otherName}: "${otherName}, do X"  or  "tell ${otherName} about X"${C.reset}`);
-  console.log(`  ${C.dim}Type anything mid-conversation to stop and send a new message${C.reset}\n`);
+  console.log(`  ${C.dim}Ctrl+C / Esc / new line: stop your run and the other session’s run${C.reset}\n`);
 }
 
 function printHelp(clr, otherName) {
@@ -225,6 +225,18 @@ export async function startRepl(myName) {
   const sysPrompt = buildSystemPrompt(myName, otherName, role.systemPrompt);
 
   initBus();
+  let peerStoppedAt = 0;  // timestamp of last stop signal from the other person
+  watchCortexStop(myName, (m) => {
+    const who = m.from
+      ? m.from.charAt(0).toUpperCase() + m.from.slice(1).toLowerCase()
+      : "Other session";
+    // Extract the actual stop timestamp from the record id (format: "<ms>-<random>")
+    peerStoppedAt = parseInt(m.id) || Date.now();
+    const had = cancelActiveCortex({ remote: true, from: m.from });
+    spinStop();
+    print(`\n  ${C.yellow}⚡${C.reset}  ${C.bold}${C.yellow}${who} stopped${C.reset}${C.dim} — cancelling this run too.${C.reset}\n`);
+    if (!had) reprompt();
+  });
 
   const rl = readline.createInterface({
     input:    process.stdin,
@@ -233,22 +245,37 @@ export async function startRepl(myName) {
     terminal: true,
   });
   _rl = rl;
+  readline.emitKeypressEvents(process.stdin, rl);
 
-  process.stdin.on("keypress", () => {
-    if (_spin) {
-      spinStop();
-      print(`  ${C.dim}⏳ Still working… press Enter to interrupt${C.reset}`);
-      rl.prompt(true);
+  let busy           = false;
+  let stopConvo      = false;
+  let pendingReplyTo = null;   // set when a reply-to-peer run is interrupted
+  const inputQueue   = [];
+  const queue        = [];
+
+  function fmtCortexErr(err) {
+    if (isCortexCancelledError(err)) {
+      if (err.remote) return "";  // message already shown by watchCortexStop
+      return `\n  ${C.yellow}⚡${C.reset} ${C.dim}Stopped (cancelled).${C.reset}\n`;
+    }
+    return `\n  ${C.red}⚠  ${err.message}${C.reset}\n`;
+  }
+
+  function interruptRunningCortex() {
+    cancelActiveCortex();
+    spinStop();
+    broadcastCortexStop(myName);
+  }
+
+  process.stdin.on("keypress", (_s, key) => {
+    if (!key) return;
+    if (key.name === "escape" && (_spin || busy)) {
+      interruptRunningCortex();
     }
   });
 
   printBanner(myName, title, clr, otherName);
   rl.prompt();
-
-  let busy          = false;
-  let stopConvo     = false;
-  const inputQueue  = [];   // user prompts typed while busy
-  const queue       = [];
 
   async function resumeAfterBusy() {
     busy = false;
@@ -294,27 +321,37 @@ export async function startRepl(myName) {
     print(`  ${C.dim}│  ${input}${C.reset}`);
     print(`  ${C.dim}│${C.reset}`);
 
-    const intent = detectIntent(input, myName, otherName);
+    const intent  = detectIntent(input, myName, otherName);
+    const target  = intent.isSend ? intent.target : pendingReplyTo;
 
-    if (intent.isSend) {
-      const target = intent.target;
+    if (target) {
+      pendingReplyTo = null;
       busy = true;
       spinStart(`Writing message to ${target}…`, clr);
 
-      let payload = intent.payload;
+      let payload      = intent.isSend ? intent.payload : input;
+      const isApproval = !!(intent.isSend && intent.isApproval);
       try {
         const prompt =
-          `You are ${myName}. Write a short, natural, respectful message to ${target} that conveys:\n"${intent.payload}"\n\n` +
+          `You are ${myName}. Write a short, natural, respectful message to ${target} that conveys:\n"${payload}"\n\n` +
           `Rules: Address ${target} by name. Sound like a real person, not a template. One to three sentences max. Output only the message, nothing else.`;
         payload = await askCortex(sysPrompt, [{ role: "user", content: prompt }]);
         payload = cleanReply(payload);
-      } catch { /* keep original on error */ }
+      } catch (err) {
+        if (isCortexCancelledError(err)) {
+          spinStop();
+          const _msg = fmtCortexErr(err); if (_msg) print(_msg);
+          await resumeAfterBusy();
+          return;
+        }
+        /* keep original on other error */
+      }
       spinStop();
 
       spinStart(`Sending to ${target}…`, clr);
       try {
         await sendMessage(myName, target, payload, {
-          isApprovalRequest: intent.isApproval,
+          isApprovalRequest: isApproval,
           depth: 0,
         });
       } catch (err) {
@@ -339,8 +376,9 @@ export async function startRepl(myName) {
     } catch (err) {
       history.pop();
       spinStop();
-      print(`\n  ${C.red}⚠  ${err.message}${C.reset}\n`);
-      await resumeAfterBusy(); return;
+      const _msg = fmtCortexErr(err); if (_msg) print(_msg);
+      await resumeAfterBusy();
+      return;
     }
     spinStop();
     showChat(myName.toUpperCase(), reply, clr);
@@ -367,11 +405,12 @@ export async function startRepl(myName) {
     const MAX_DEPTH = 50;  // effectively unlimited — user can interrupt anytime
     const depth     = msg.depth ?? 0;
 
-    if (!msg.isApprovalDecision && depth < MAX_DEPTH && !stopConvo) {
+    if (!msg.isApprovalDecision && depth < MAX_DEPTH && !stopConvo && msg.timestamp > peerStoppedAt) {
       const label = msg.isApprovalRequest
         ? `[APPROVAL REQUEST from ${msg.from}]: ${msg.text}`
         : `[Message from ${msg.from}]: ${msg.text}`;
 
+      pendingReplyTo = msg.from;
       spinStart("Thinking…", otherClr);
       history.push({ role: "user", content: label });
       let reply;
@@ -381,19 +420,30 @@ export async function startRepl(myName) {
       } catch (err) {
         history.pop();
         spinStop();
-        print(`\n  ${C.red}⚠  ${err.message}${C.reset}\n`);
-        busy = false; drain(); reprompt(); return;
+        const _msg = fmtCortexErr(err); if (_msg) print(_msg);
+        busy = false;
+        if (inputQueue.length) {
+          const next = inputQueue.shift();
+          await processUserInput(next);
+        } else {
+          drain();
+          reprompt();
+        }
+        return;
       }
       spinStop();
 
-      const replyLabel = msg.isApprovalRequest ? `${myName.toUpperCase()}  (approval decision)` : myName.toUpperCase();
-      showChat(replyLabel, reply, clr);
+      if (reply) {
+        const replyLabel = msg.isApprovalRequest ? `${myName.toUpperCase()}  (approval decision)` : myName.toUpperCase();
+        showChat(replyLabel, reply, clr);
 
-      await sendMessage(myName, msg.from, reply, {
-        isReply:            true,
-        isApprovalDecision: msg.isApprovalRequest,
-        depth:              depth + 1,
-      });
+        await sendMessage(myName, msg.from, reply, {
+          isReply:            true,
+          isApprovalDecision: msg.isApprovalRequest,
+          depth:              depth + 1,
+        });
+        pendingReplyTo = null;
+      }
     }
 
     if (stopConvo) {
@@ -425,9 +475,11 @@ export async function startRepl(myName) {
 
     if (busy) {
       stopConvo = true;
+      cancelActiveCortex();
       spinStop();
+      broadcastCortexStop(myName);
       inputQueue.push(input);
-      print(`\n  ${C.yellow}⚡${C.reset} ${C.dim}Interrupting… your message will be processed next:${C.reset}`);
+      print(`\n  ${C.yellow}⚡${C.reset} ${C.dim}Stopping run… your message is next:${C.reset}`);
       print(`  ${C.dim}│  ${input}${C.reset}`);
       print(`  ${C.dim}│${C.reset}`);
       rl.prompt();
@@ -437,6 +489,12 @@ export async function startRepl(myName) {
     await processUserInput(input);
   });
 
-  rl.on("SIGINT", () => { console.log(`\n\n  ${C.dim}Use /quit to exit.${C.reset}\n`); rl.prompt(); });
+  rl.on("SIGINT", () => {
+    cancelActiveCortex();
+    spinStop();
+    broadcastCortexStop(myName);
+    console.log("");
+    rl.prompt();
+  });
   rl.on("close", () => process.exit(0));
 }

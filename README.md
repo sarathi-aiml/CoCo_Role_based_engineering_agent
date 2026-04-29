@@ -1,5 +1,6 @@
-# Cortex Code Role-based Engineering Agent
-In this Repo we have two AI personas running in separate terminals, having real back-and-forth conversations powered entirely by the `cortex-code` CLI. Names, roles, and titles are fully customizable via `config.json`.
+# Dual Cortex Wrapper
+
+Two AI personas running in separate terminals, having real back-and-forth conversations powered entirely by the `cortex-code` CLI. Names, roles, and titles are fully customizable via `config.json`.
 
 ---
 
@@ -15,8 +16,8 @@ No npm packages required — uses only Node.js built-ins.
 ## Setup
 
 ```bash
-git clone https://github.com/sarathi-aiml/CoCo_Role_based_engineering_agent
-cd CoCo_Role_based_engineering_agent
+git clone <repo>
+cd dual-cortex-wrapper
 chmod +x bin/start.js bin/alex.js bin/dave.js
 ```
 
