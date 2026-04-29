@@ -16,8 +16,8 @@ No npm packages required — uses only Node.js built-ins.
 ## Setup
 
 ```bash
-git clone <repo>
-cd dual-cortex-wrapper
+git clone https://github.com/sarathi-aiml/CoCo_Role_based_engineering_agent
+cd CoCo_Role_based_engineering_agent
 chmod +x bin/start.js bin/alex.js bin/dave.js
 ```
 
